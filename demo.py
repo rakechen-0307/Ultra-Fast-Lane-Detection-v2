@@ -1,10 +1,23 @@
-import torch, os, cv2
-from utils.dist_utils import dist_print
-import torch, os
-from utils.common import merge_config, get_model
-import tqdm
+import os
+import cv2
+import torch
+import argparse
+import numpy as np
+from tqdm import tqdm
 import torchvision.transforms as transforms
+
+from utils.common import get_model
+from utils.config import ConfigDict
 from data.dataset import LaneTestDataset
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Lane Detection Demo')
+    parser.add_argument('--dataset', type=str, default='culane', choices=['culane', 'tusimple'], help='Dataset to use for inference')
+    parser.add_argument('--model', type=str, default='res18', choices=['res18', 'res34'], help='Model architecture to use')
+    parser.add_argument('--image_dir', type=str, default='images/', help='Directory containing images for inference')
+    parser.add_argument('--output_dir', type=str, default='outputs/', help='Directory to save output images')
+    parser.add_argument('--ckpt_dir', type=str, default='checkpoints/', help='Path to the model checkpoint directory')
+    return parser.parse_args()
 
 def pred2coords(pred, row_anchor, col_anchor, local_width = 1, original_image_width = 1640, original_image_height = 590):
     batch_size, num_grid_row, num_cls_row, num_lane_row = pred['loc_row'].shape
@@ -54,26 +67,60 @@ def pred2coords(pred, row_anchor, col_anchor, local_width = 1, original_image_wi
             coords.append(tmp)
 
     return coords
+
 if __name__ == "__main__":
     torch.backends.cudnn.benchmark = True
-
-    args, cfg = merge_config()
+    args = parse_args()
+    os.makedirs(args.output_dir, exist_ok=True)
+    cfg = ConfigDict({
+        'dataset': args.dataset
+    })
     cfg.batch_size = 1
-    print('setting batch_size to 1 for demo generation')
 
-    dist_print('start testing...')
-    assert cfg.backbone in ['18','34','50','101','152','50next','101next','50wide','101wide']
-
-    if cfg.dataset == 'CULane':
+    if (args.dataset == 'culane'):
         cls_num_per_lane = 18
-    elif cfg.dataset == 'Tusimple':
+        cfg.num_row = 72
+        cfg.num_col = 81
+        cfg.num_cell_row = 200
+        cfg.num_cell_col = 100
+        cfg.num_lanes = 4
+        cfg.use_aux = False
+        cfg.train_width = 1600
+        cfg.train_height = 320
+        cfg.fc_norm = True
+        cfg.row_anchor = np.linspace(0.42, 1, cfg.num_row)
+        cfg.col_anchor = np.linspace(0, 1, cfg.num_col)
+        cfg.crop_ratio = 0.6
+    elif (args.dataset == 'tusimple'):
         cls_num_per_lane = 56
+        cfg.num_row = 56
+        cfg.num_col = 41
+        cfg.num_cell_row = 100
+        cfg.num_cell_col = 100
+        cfg.num_lanes = 4
+        cfg.use_aux = False
+        cfg.train_width = 800
+        cfg.train_height = 320
+        cfg.fc_norm = False
+        cfg.row_anchor = np.linspace(160, 710, cfg.num_row) / 720
+        cfg.col_anchor = np.linspace(0, 1, cfg.num_col)
+        cfg.crop_ratio = 0.8
     else:
         raise NotImplementedError
-
+    
+    if (args.model == 'res18'):
+        cfg.backbone = '18'
+    elif (args.model == 'res34'):
+        cfg.backbone = '34'
+    else:
+        raise NotImplementedError
+    
     net = get_model(cfg)
 
-    state_dict = torch.load(cfg.test_model, map_location='cpu')['model']
+    ckpt_path = os.path.join(args.ckpt_dir, f'{args.dataset}_{args.model}.pth')
+    if not os.path.exists(ckpt_path):
+        raise FileNotFoundError(f"Checkpoint file {ckpt_path} does not exist. Please provide a valid model checkpoint.")
+    state_dict = torch.load(ckpt_path, map_location='cpu')['model']
     compatible_state_dict = {}
     for k, v in state_dict.items():
         if 'module.' in k:
@@ -81,7 +128,7 @@ if __name__ == "__main__":
         else:
             compatible_state_dict[k] = v
 
-    net.load_state_dict(compatible_state_dict, strict=False)
+    net.load_state_dict(compatible_state_dict, strict=True)
     net.eval()
 
     img_transforms = transforms.Compose([
@@ -89,32 +136,22 @@ if __name__ == "__main__":
         transforms.ToTensor(),
         transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    if cfg.dataset == 'CULane':
-        splits = ['test0_normal.txt', 'test1_crowd.txt', 'test2_hlight.txt', 'test3_shadow.txt', 'test4_noline.txt', 'test5_arrow.txt', 'test6_curve.txt', 'test7_cross.txt', 'test8_night.txt']
-        datasets = [LaneTestDataset(cfg.data_root,os.path.join(cfg.data_root, 'list/test_split/'+split),img_transform = img_transforms, crop_size = cfg.train_height) for split in splits]
-        img_w, img_h = 1640, 590
-    elif cfg.dataset == 'Tusimple':
-        splits = ['test.txt']
-        datasets = [LaneTestDataset(cfg.data_root,os.path.join(cfg.data_root, split),img_transform = img_transforms, crop_size = cfg.train_height) for split in splits]
-        img_w, img_h = 1280, 720
-    else:
-        raise NotImplementedError
-    for split, dataset in zip(splits, datasets):
-        loader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle = False, num_workers=1)
-        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-        print(split[:-3]+'avi')
-        vout = cv2.VideoWriter(split[:-3]+'avi', fourcc , 30.0, (img_w, img_h))
-        for i, data in enumerate(tqdm.tqdm(loader)):
-            imgs, names = data
-            imgs = imgs.cuda()
-            with torch.no_grad():
-                pred = net(imgs)
+    dataset = LaneTestDataset(
+        path=args.image_dir, img_transform=img_transforms, crop_size=cfg.train_height
+    )
+    loader = torch.utils.data.DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, num_workers=1)
 
-            vis = cv2.imread(os.path.join(cfg.data_root,names[0]))
-            coords = pred2coords(pred, cfg.row_anchor, cfg.col_anchor, original_image_width = img_w, original_image_height = img_h)
-            for lane in coords:
-                for coord in lane:
-                    cv2.circle(vis,coord,5,(0,255,0),-1)
-            vout.write(vis)
-        
-        vout.release()
+    for i, data in enumerate(tqdm(loader)):
+        imgs, names = data
+        imgs = imgs.cuda()
+        with torch.no_grad():
+            pred = net(imgs)
+
+        vis = cv2.imread(os.path.join(args.image_dir, names[0]))
+        img_h, img_w = vis.shape[:2]
+        coords = pred2coords(pred, cfg.row_anchor, cfg.col_anchor, original_image_width=img_w, original_image_height=img_h)
+        for lane in coords:
+            for x, y in lane:
+                cv2.circle(vis, (x, y), 5, (0, 255, 0), -1)
+        output_path = os.path.join(args.output_dir, names[0])
+        cv2.imwrite(output_path, vis)

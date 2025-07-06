@@ -6,21 +6,21 @@ import numpy as np
 import cv2
 from data.mytransforms import find_start_pos
 
-
 def loader_func(path):
-    return Image.open(path)
-
+    return Image.open(path).convert('RGB')
 
 class LaneTestDataset(torch.utils.data.Dataset):
-    def __init__(self, path, list_path, img_transform=None, crop_size=None):
+    def __init__(self, path, list_path=None, img_transform=None, crop_size=None):
         super(LaneTestDataset, self).__init__()
         self.path = path
         self.img_transform = img_transform
         self.crop_size = crop_size
-        with open(list_path, 'r') as f:
-            self.list = f.readlines()
-        self.list = [l[1:] if l[0] == '/' else l for l in self.list]  # exclude the incorrect path prefix '/' of CULane
-
+        if list_path is None:
+            self.list = sorted(os.listdir(path))
+        else:
+            with open(list_path, 'r') as f:
+                self.list = f.readlines()
+            self.list = [l[1:] if l[0] == '/' else l for l in self.list]  # exclude the incorrect path prefix '/' of CULane
 
     def __getitem__(self, index):
         name = self.list[index].split()[0]
@@ -70,14 +70,11 @@ class LaneClsDataset(torch.utils.data.Dataset):
 
         img_path = os.path.join(self.path, img_name)
         img = loader_func(img_path)
-    
 
         if self.simu_transform is not None:
             img, label = self.simu_transform(img, label)
         lane_pts = self._get_index(label)
         # get the coordinates of lanes at row anchors
-
-
 
         w, h = img.size
         cls_label = self._grid_pts(lane_pts, self.griding_num, w)

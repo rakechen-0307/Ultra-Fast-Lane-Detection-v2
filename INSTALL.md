@@ -10,25 +10,29 @@
 2. Create a conda virtual environment and activate it
 
     ```Shell
-    conda create -n lane-det python=3.7 -y
+    conda create -n lane-det python=3.10 -y
     conda activate lane-det
     ```
 
 3. Install dependencies
 
     ```Shell
-    # If you dont have pytorch
-    conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia
-
     pip install -r requirements.txt
+    # use latest torch
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 
-    pip install --extra-index-url https://developer.download.nvidia.com/compute/redist --upgrade nvidia-dali-cuda110
-    # Install Nvidia DALI (Very fast data loading lib))
+    # install nvidia-dali
+    pip install --extra-index-url https://pypi.nvidia.com --upgrade nvidia-dali-cuda120
+
+    # set CUDA_HOME environment (if not set)
+    conda install -c nvidia cuda-toolkit -y
+    which nvcc
+    # assume nvcc path is "{base_path}/bin/nvcc"
+    export CUDA_HOME={base_path}
 
     cd my_interp
-
-    sh build.sh
-    # If this fails, you might need to upgrade your GCC to v7.3.0
+    sh build.sh  # If this fails, you might need to upgrade your GCC to v7.3.0
+    cd ..
     ```
 
 4. Data preparation
